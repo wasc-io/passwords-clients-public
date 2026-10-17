@@ -48,6 +48,15 @@ Keep this list in sync with the diff (`git diff <upstream_tag> wasc -- . ':!wasc
   not redefine arrays it wants to replace. `publish` is given as an array so it replaces the
   upstream object instead of merging into it (otherwise the upstream `url` leaks in).
 
+## Chrome Web Store and the extension ID
+
+The CWS rejects a manifest containing `key` and assigns the item ID itself. To keep
+`gdadfgkaaapapjjhoamgbmjmlhbckdho`, make the **first** upload by hand: take
+`wasc-passwords-chrome-<version>-webstore.zip` (CI artifact, manifest without `key`), add the private
+key as `key.pem` at the zip root, and upload it as a new item. Later uploads (CI, API v2) use the
+`-webstore.zip` without `key.pem`. If the store ends up with a different ID, add
+`chrome-extension://<store-id>/` to `loadChromeIds()` in `apps/desktop/src/main/native-messaging.main.ts`.
+
 ## Known leftovers (intentionally not changed)
 
 - In-app strings, help/web-vault links and `cloudWebVaultUrl` still say/point to Bitwarden.
