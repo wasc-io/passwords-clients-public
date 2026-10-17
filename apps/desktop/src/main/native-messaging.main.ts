@@ -142,7 +142,7 @@ export class NativeMessagingMain {
 
   private async generateChromeJson(binaryPath: string) {
     return {
-      name: "com.8bit.bitwarden",
+      name: "me.wasc.passwords",
       description: "Bitwarden desktop <-> browser bridge",
       path: binaryPath,
       type: "stdio",
@@ -152,11 +152,11 @@ export class NativeMessagingMain {
 
   private async generateFirefoxJson(binaryPath: string) {
     return {
-      name: "com.8bit.bitwarden",
+      name: "me.wasc.passwords",
       description: "Bitwarden desktop <-> browser bridge",
       path: binaryPath,
       type: "stdio",
-      allowed_extensions: ["{446900e4-71c2-419f-a6a7-df9c091e268b}"],
+      allowed_extensions: ["passwords@wasc.me"],
     };
   }
 
@@ -200,7 +200,7 @@ export class NativeMessagingMain {
         for (const [key, browserDirectory] of Object.entries(nmhs)) {
           if (existsSync(browserDirectory)) {
             const nmhsPath = path.join(browserDirectory, "NativeMessagingHosts");
-            const manifestPath = path.join(nmhsPath, "com.8bit.bitwarden.json");
+            const manifestPath = path.join(nmhsPath, "me.wasc.passwords.json");
 
             let manifest: any = await this.generateChromeJson(binaryPath);
             if (key === "Firefox" || key === "Zen") {
@@ -243,12 +243,12 @@ export class NativeMessagingMain {
 
             if (key === "Firefox") {
               await this.writeManifest(
-                path.join(nhmsPath, "com.8bit.bitwarden.json"),
+                path.join(nhmsPath, "me.wasc.passwords.json"),
                 await this.generateFirefoxJson(browserBinaryPath),
               );
             } else {
               await this.writeManifest(
-                path.join(nhmsPath, "com.8bit.bitwarden.json"),
+                path.join(nhmsPath, "me.wasc.passwords.json"),
                 await this.generateChromeJson(browserBinaryPath),
               );
             }
@@ -267,12 +267,12 @@ export class NativeMessagingMain {
 
             if (key === "Firefox") {
               await this.writeManifest(
-                path.join(value, "com.8bit.bitwarden.json"),
+                path.join(value, "me.wasc.passwords.json"),
                 await this.generateFirefoxJson(sandboxedProxyBinaryPath),
               );
             } else if (key === "Chrome" || key === "Chromium" || key === "Microsoft Edge") {
               await this.writeManifest(
-                path.join(value, "com.8bit.bitwarden.json"),
+                path.join(value, "me.wasc.passwords.json"),
                 await this.generateChromeJson(sandboxedProxyBinaryPath),
               );
             } else {
@@ -322,14 +322,14 @@ export class NativeMessagingMain {
     await fs.mkdir(nmhsPath, { recursive: true });
 
     await this.writeManifest(
-      path.join(nmhsPath, "com.8bit.bitwarden.json"),
+      path.join(nmhsPath, "me.wasc.passwords.json"),
       await this.generateChromeJson(binaryPath),
     );
   }
 
   async generateDdgManifests() {
     const manifest = {
-      name: "com.8bit.bitwarden",
+      name: "me.wasc.passwords",
       description: "Bitwarden desktop <-> DuckDuckGo bridge",
       path: this.binaryPath(),
       type: "stdio",
@@ -342,7 +342,7 @@ export class NativeMessagingMain {
     switch (process.platform) {
       case "darwin": {
         /* eslint-disable-next-line no-useless-escape */
-        const path = `${this.homedir()}/Library/Containers/com.duckduckgo.macos.browser/Data/Library/Application\ Support/NativeMessagingHosts/com.8bit.bitwarden.json`;
+        const path = `${this.homedir()}/Library/Containers/com.duckduckgo.macos.browser/Data/Library/Application\ Support/NativeMessagingHosts/me.wasc.passwords.json`;
         await this.writeManifest(path, manifest);
         break;
       }
@@ -367,7 +367,7 @@ export class NativeMessagingMain {
         const nmhs = this.getDarwinNMHS();
         for (const [, value] of Object.entries(nmhs)) {
           await this.removeIfExists(
-            path.join(value, "NativeMessagingHosts", "com.8bit.bitwarden.json"),
+            path.join(value, "NativeMessagingHosts", "me.wasc.passwords.json"),
           );
         }
         break;
@@ -376,17 +376,17 @@ export class NativeMessagingMain {
         for (const [key, value] of Object.entries(this.getLinuxNMHS())) {
           if (key === "Firefox") {
             await this.removeIfExists(
-              path.join(value, "native-messaging-hosts", "com.8bit.bitwarden.json"),
+              path.join(value, "native-messaging-hosts", "me.wasc.passwords.json"),
             );
           } else {
             await this.removeIfExists(
-              path.join(value, "NativeMessagingHosts", "com.8bit.bitwarden.json"),
+              path.join(value, "NativeMessagingHosts", "me.wasc.passwords.json"),
             );
           }
         }
 
         for (const [, value] of Object.entries(this.getFlatpakNMHS())) {
-          await this.removeIfExists(path.join(value, "com.8bit.bitwarden.json"));
+          await this.removeIfExists(path.join(value, "me.wasc.passwords.json"));
           await this.removeIfExists(path.join(value, ".bitwarden_desktop_proxy"));
         }
 
@@ -401,7 +401,7 @@ export class NativeMessagingMain {
     switch (process.platform) {
       case "darwin": {
         /* eslint-disable-next-line no-useless-escape */
-        const path = `${this.homedir()}/Library/Containers/com.duckduckgo.macos.browser/Data/Library/Application\ Support/NativeMessagingHosts/com.8bit.bitwarden.json`;
+        const path = `${this.homedir()}/Library/Containers/com.duckduckgo.macos.browser/Data/Library/Application\ Support/NativeMessagingHosts/me.wasc.passwords.json`;
         await this.removeIfExists(path);
         break;
       }
@@ -425,17 +425,17 @@ export class NativeMessagingMain {
 
   private getWindowsNMHS() {
     return {
-      Firefox: ["HKCU", "SOFTWARE\\Mozilla\\NativeMessagingHosts\\com.8bit.bitwarden"],
-      Chrome: ["HKCU", "SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\com.8bit.bitwarden"],
-      Chromium: ["HKCU", "SOFTWARE\\Chromium\\NativeMessagingHosts\\com.8bit.bitwarden"],
+      Firefox: ["HKCU", "SOFTWARE\\Mozilla\\NativeMessagingHosts\\me.wasc.passwords"],
+      Chrome: ["HKCU", "SOFTWARE\\Google\\Chrome\\NativeMessagingHosts\\me.wasc.passwords"],
+      Chromium: ["HKCU", "SOFTWARE\\Chromium\\NativeMessagingHosts\\me.wasc.passwords"],
       "Microsoft Edge": [
         "HKCU",
-        "SOFTWARE\\Microsoft\\Edge\\NativeMessagingHosts\\com.8bit.bitwarden",
+        "SOFTWARE\\Microsoft\\Edge\\NativeMessagingHosts\\me.wasc.passwords",
       ],
-      Vivaldi: ["HKCU", "SOFTWARE\\Vivaldi\\NativeMessagingHosts\\com.8bit.bitwarden"],
+      Vivaldi: ["HKCU", "SOFTWARE\\Vivaldi\\NativeMessagingHosts\\me.wasc.passwords"],
       Brave: [
         "HKCU",
-        "SOFTWARE\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\com.8bit.bitwarden",
+        "SOFTWARE\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts\\me.wasc.passwords",
       ],
     };
   }
@@ -493,14 +493,8 @@ export class NativeMessagingMain {
 
   private async loadChromeIds(): Promise<string[]> {
     const ids: Set<string> = new Set([
-      // Chrome extension
-      "chrome-extension://nngceckbapebfimnlniiiahkandclblb/",
-      // Chrome beta extension
-      "chrome-extension://hccnnhgbibccigepcmlgppchkpfdophk/",
-      // Edge extension
-      "chrome-extension://jbkfoedolllekgbhcbcoahefnbanhhlh/",
-      // Opera extension
-      "chrome-extension://ccnckbpmaceehanjmeomladnmlffdjgn/",
+      // wasc passwords extension (same ID in Chrome, Edge and Opera via the manifest key)
+      "chrome-extension://gdadfgkaaapapjjhoamgbmjmlhbckdho/",
     ]);
 
     if (!isDev()) {

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "extends": "./electron-builder.json",
+  "extraMetadata": {
+    "name": "wasc-passwords",
+    "productName": "wasc passwords"
+  },
+  "productName": "wasc passwords",
+  "appId": "me.wasc.passwords.desktop",
+  "copyright": "Copyright © 2015-2026 Bitwarden Inc. Rebranded build by wasc.",
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "wasc-io",
+      "repo": "passwords-clients",
+      "releaseType": "release"
+    }
+  ],
+  "mac": {
+    "icon": "../../wasc/brand/desktop/icon.icns",
+    "entitlements": "../../wasc/desktop/entitlements.mac.plist",
+    "provisioningProfile": null,
+    "artifactName": "wasc-passwords-${version}-mac.${ext}"
+  },
+  "dmg": {
+    "icon": "../../wasc/brand/desktop/icon.icns"
+  }
+}

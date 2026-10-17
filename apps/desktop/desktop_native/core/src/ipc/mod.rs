@@ -138,7 +138,9 @@ pub fn path(name: &str) -> std::path::PathBuf {
     {
         // On Linux and unsandboxed Mac, we use the user's cache directory.
         let home = dirs::cache_dir().expect("Could not find user cache directory");
-        let path_dir = home.join("com.bitwarden.desktop");
+        // wasc passwords fork: own socket dir so we never collide with an official Bitwarden
+        // install.
+        let path_dir = home.join("me.wasc.passwords.desktop");
 
         // The cache directory might not exist, so create it
         let _ = std::fs::create_dir_all(&path_dir);
