@@ -1,0 +1,191 @@
+# wasc passwords: universal macOS desktop build (DMG + zip + latest-mac.yml for electron-updater).
+# Signs with a Developer ID certificate and notarizes when the secrets exist; otherwise produces an
+# unsigned (ad-hoc signed) build that still runs after `xattr -dr com.apple.quarantine`.
+# See wasc/README.md.
+name: wasc desktop
+
+on:
+  push:
+    branches: [wasc]
+    paths:
+      - "apps/desktop/**"
+      - "libs/**"
+      - "wasc/desktop/**"
+      - "wasc/brand/**"
+      - "package-lock.json"
+      - ".github/workflows/wasc-desktop.yml"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish GitHub release desktop-v<version> and mark it Latest (auto-update feed)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wasc-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS universal
+    runs-on: macos-15
+    env:
+      NODE_OPTIONS: --max_old_space_size=4096
+      HAS_MAC_CERT: ${{ secrets.MAC_CERT_P12_BASE64 != '' && secrets.MAC_CERT_PASSWORD != '' }}
+      HAS_ASC: ${{ secrets.ASC_KEY_ID != '' && secrets.ASC_ISSUER_ID != '' && secrets.ASC_KEY_P8 != '' }}
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.14.2"
+
+      - name: Set up Node-gyp
+        run: python -m pip install setuptools
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          workspaces: |
+            apps/desktop/desktop_native -> target
+
+      - name: Install Node dependencies
+        working-directory: ./
+        run: |
+          npm ci
+          # Same as upstream's OSS build: never ship the commercially licensed SDK.
+          rm -rf node_modules/@bitwarden/commercial-sdk-internal
+
+      - name: Read version
+        id: version
+        run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+
+      - name: Build native modules (x64 + arm64)
+        working-directory: apps/desktop/desktop_native
+        run: node build.js cross-platform --release
+
+      - name: Build application
+        run: npm run build
+
+      - name: Import Developer ID certificate
+        if: env.HAS_MAC_CERT == 'true'
+        env:
+          MAC_CERT_P12_BASE64: ${{ secrets.MAC_CERT_P12_BASE64 }}
+          MAC_CERT_PASSWORD: ${{ secrets.MAC_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -hex 32)
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          security default-keychain -s "$KEYCHAIN"
+          echo "$MAC_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MAC_CERT_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security -T /usr/bin/productbuild
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          # The SHA-1 hash works both for electron-builder (CSC_NAME) and for `codesign -s`
+          # in scripts/after-pack.js (via scripts/macos-signing-identity.js).
+          HASH=$(security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application" | head -1 | awk '{print $2}')
+          if [ -z "$HASH" ]; then echo "No Developer ID Application identity in the p12"; exit 1; fi
+          echo "CSC_NAME=$HASH" >> "$GITHUB_ENV"
+          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+      - name: Set up notarization key
+        if: env.HAS_MAC_CERT == 'true' && env.HAS_ASC == 'true'
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          if printf '%s' "$ASC_KEY_P8" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s\n' "$ASC_KEY_P8" > "$KEY_PATH"
+          else
+            printf '%s' "$ASC_KEY_P8" | base64 --decode > "$KEY_PATH"
+          fi
+          {
+            echo "APP_STORE_CONNECT_TEAM_ISSUER=$ASC_ISSUER_ID"
+            echo "APP_STORE_CONNECT_AUTH_KEY_ID=$ASC_KEY_ID"
+            echo "APP_STORE_CONNECT_AUTH_KEY_PATH=$KEY_PATH"
+          } >> "$GITHUB_ENV"
+
+      - name: Package (signed)
+        if: env.HAS_MAC_CERT == 'true'
+        env:
+          APPLE_NOTARIZE: ${{ env.HAS_ASC == 'true' && 'true' || 'false' }}
+        # GITHUB_ACTIONS=false keeps scripts/macos-signing-identity.js from picking Bitwarden's
+        # identity; it then uses CSC_NAME.
+        run: |
+          npm run clean:dist
+          GITHUB_ACTIONS=false npx electron-builder --config ../../wasc/desktop/electron-builder.json \
+            --mac --universal -p never
+
+      - name: Package (unsigned)
+        if: env.HAS_MAC_CERT != 'true'
+        env:
+          APPLE_NOTARIZE: "false"
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        # CSC_NAME=- makes after-pack ad-hoc sign the proxy; the app itself is left to Electron's
+        # ad-hoc signature. Not notarized: users must clear the quarantine flag.
+        run: |
+          echo "::warning::MAC_CERT_P12_BASE64/MAC_CERT_PASSWORD not set: building an unsigned, un-notarized app"
+          npm run clean:dist
+          GITHUB_ACTIONS=false CSC_NAME=- npx electron-builder --config ../../wasc/desktop/electron-builder.json \
+            --mac --universal -p never -c.mac.identity=null
+
+      - name: List output
+        run: ls -la dist
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wasc-passwords-desktop-${{ steps.version.outputs.version }}-mac
+          path: |
+            apps/desktop/dist/*.dmg
+            apps/desktop/dist/*.zip
+            apps/desktop/dist/*.blockmap
+            apps/desktop/dist/*.yml
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: github.event_name == 'workflow_dispatch' && inputs.release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: desktop-v${{ steps.version.outputs.version }}
+          SIGNED: ${{ env.HAS_MAC_CERT == 'true' && 'signed' || 'UNSIGNED' }}
+        run: |
+          set -euo pipefail
+          # electron-updater (GitHub provider) reads latest-mac.yml from the release marked Latest.
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+              --title "wasc passwords desktop ${{ steps.version.outputs.version }}" \
+              --notes "macOS universal build ($SIGNED) from $GITHUB_SHA (upstream desktop-v${{ steps.version.outputs.version }})."
+          else
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --latest
+          fi
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber dist/*.dmg dist/*.zip dist/*.blockmap dist/*.yml
+
+      - name: Clean up keychain
+        if: always() && env.CSC_KEYCHAIN != ''
+        run: security delete-keychain "$CSC_KEYCHAIN" || true

@@ -1,0 +1,172 @@
+# wasc passwords: quarterly upstream sync. Mirrors bitwarden/clients main into our `main`, merges
+# the newest stable upstream desktop-v* tag into a sync/<tag> branch (Claude resolves conflicts
+# when the merge does not apply cleanly) and opens a PR into `wasc`. See wasc/README.md.
+#
+# Pushing upstream history that touches .github/workflows needs a token with the `workflow`
+# scope: set SYNC_TOKEN (fine-grained PAT on this repo: contents, pull requests, workflows,
+# actions). Without it the default GITHUB_TOKEN is used and such pushes are rejected.
+name: wasc sync
+
+on:
+  schedule:
+    - cron: "0 6 1 1,4,7,10 *"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Upstream tag to merge (default: newest stable desktop-v* tag)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+concurrency:
+  group: wasc-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Merge upstream release
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
+    steps:
+      - name: Check out wasc
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: wasc
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Keep upstream workflows disabled
+        # Workflows that arrived with the previous sync are enabled by default.
+        run: |
+          gh workflow list -R "$GITHUB_REPOSITORY" --all --json id,path,state \
+            --jq '.[] | select(.state == "active") | select(.path | test("/wasc-[^/]*$") | not) | .id' \
+            | while read -r id; do gh workflow disable "$id" -R "$GITHUB_REPOSITORY" || true; done
+
+      - name: Fetch upstream
+        run: |
+          git config user.name "wasc-sync[bot]"
+          git config user.email "wasc-sync@users.noreply.github.com"
+          git remote add upstream https://github.com/bitwarden/clients.git
+          git fetch --no-tags upstream main
+          git fetch --no-tags upstream 'refs/tags/desktop-v*:refs/tags/desktop-v*' 'refs/tags/browser-v*:refs/tags/browser-v*'
+
+      - name: Mirror upstream main
+        run: |
+          git push origin upstream/main:refs/heads/main --force \
+            || echo "::warning::Could not update main (set SYNC_TOKEN with the workflow scope)"
+
+      - name: Pick tag
+        id: pick
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          TAG="${INPUT_TAG:-$(git tag -l 'desktop-v*' | grep -E '^desktop-v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "branch=sync/$TAG" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$TAG" HEAD; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "$TAG is already merged into wasc"
+          elif git ls-remote --exit-code origin "refs/heads/sync/$TAG" >/dev/null; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "sync/$TAG already exists; finish or delete it first"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+          BROWSER_TAG="browser-${TAG#desktop-}"
+          if git rev-parse -q --verify "refs/tags/$BROWSER_TAG" >/dev/null \
+            && [ "$(git rev-parse "$BROWSER_TAG^{commit}")" != "$(git rev-parse "$TAG^{commit}")" ]; then
+            echo "note=$BROWSER_TAG points at a different commit than $TAG; the browser build uses $TAG." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge
+        id: merge
+        if: steps.pick.outputs.skip == 'false'
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+          BRANCH: ${{ steps.pick.outputs.branch }}
+        run: |
+          git checkout -b "$BRANCH"
+          if git merge --no-ff --no-edit -m "chore(wasc): merge upstream $TAG" "$TAG"; then
+            echo "conflicts=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "conflicts=true" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U | tee "$RUNNER_TEMP/conflicts.txt"
+          fi
+
+      - name: Resolve conflicts with Claude
+        if: steps.merge.outputs.conflicts == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.SYNC_TOKEN || github.token }}
+          claude_args: >-
+            --max-turns 80
+            --allowedTools "Read,Edit,Write,Glob,Grep,Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git add:*),Bash(git checkout:*),Bash(grep:*),Bash(cat:*),Bash(ls:*)"
+          prompt: |
+            You are in a git merge of upstream bitwarden/clients tag ${{ steps.pick.outputs.tag }} into
+            the `wasc` branch of wasc-io/passwords-clients (a rebranded fork, see wasc/README.md).
+            The merge stopped with conflicts in the files listed in ${{ runner.temp }}/conflicts.txt.
+
+            Resolve every conflict: take upstream's changes and re-apply the small wasc patch on top
+            (the wasc side is always a minimal identifier/branding change, described in
+            wasc/README.md under "What the fork changes"). Do not drop upstream changes, do not add
+            unrelated edits, and leave in-app "Bitwarden" strings alone. Remove all conflict markers
+            and `git add` each resolved file. Do NOT commit and do NOT push.
+            Finally write a short summary of what you resolved to ${{ runner.temp }}/resolution.md.
+
+      - name: Commit merge
+        if: steps.pick.outputs.skip == 'false'
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.merge.outputs.conflicts }}" = "true" ]; then
+            if git diff --name-only --diff-filter=U | grep -q .; then
+              echo "Unresolved conflicts remain:"; git diff --name-only --diff-filter=U; exit 1
+            fi
+            if git grep -nE '^(<<<<<<<|>>>>>>>) ' -- . ':!*.md' | grep -q .; then
+              echo "Conflict markers remain"; git grep -nE '^(<<<<<<<|>>>>>>>) ' -- . ':!*.md'; exit 1
+            fi
+            git commit --no-edit -m "chore(wasc): merge upstream $TAG" \
+              -m "Conflicts resolved by claude-code-action: $(tr '\n' ' ' < "$RUNNER_TEMP/conflicts.txt")"
+          fi
+          sed -i "s|^upstream_tag:.*|upstream_tag: $TAG|" wasc/README.md
+          git add wasc/README.md
+          git commit -m "chore(wasc): record upstream $TAG" || true
+
+      - name: Push and open PR
+        if: steps.pick.outputs.skip == 'false'
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+          BRANCH: ${{ steps.pick.outputs.branch }}
+          NOTE: ${{ steps.pick.outputs.note }}
+          CONFLICTS: ${{ steps.merge.outputs.conflicts }}
+        run: |
+          set -euo pipefail
+          git push origin "$BRANCH"
+          {
+            echo "Merges upstream \`$TAG\` into \`wasc\`."
+            echo
+            if [ "$CONFLICTS" = "true" ]; then
+              echo "The merge had conflicts, resolved by claude-code-action. **Review these files carefully:**"
+              sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
+              echo
+              [ -f "$RUNNER_TEMP/resolution.md" ] && cat "$RUNNER_TEMP/resolution.md"
+            else
+              echo "Clean merge."
+            fi
+            [ -n "$NOTE" ] && { echo; echo "Note: $NOTE"; }
+            echo
+            echo "Checklist: wasc browser + wasc desktop workflows green on this branch, then merge (merge commit, not squash)."
+          } > "$RUNNER_TEMP/body.md"
+          gh pr create -R "$GITHUB_REPOSITORY" --base wasc --head "$BRANCH" \
+            --title "chore(wasc): sync upstream $TAG" --body-file "$RUNNER_TEMP/body.md"
+          # Pushes made with GITHUB_TOKEN do not trigger workflows; kick the builds explicitly.
+          gh workflow run wasc-browser.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH" -f release=false || true
+          gh workflow run wasc-desktop.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH" -f release=false || true

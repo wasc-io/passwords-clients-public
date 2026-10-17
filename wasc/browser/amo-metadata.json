@@ -1,0 +1,15 @@
+{
+  "categories": {
+    "firefox": ["privacy-security"]
+  },
+  "summary": {
+    "en-US": "Password manager for the wasc self-hosted vault at passwords.wasc.me. A rebranded build of the Bitwarden browser extension."
+  },
+  "homepage": {
+    "en-US": "https://github.com/wasc-io/passwords-clients"
+  },
+  "version": {
+    "license": "GPL-3.0-or-later",
+    "approval_notes": "Rebranded build of the open-source Bitwarden browser extension (GPL-3.0), preconfigured for a private self-hosted server. Build: npm ci at the repository root, then npm run dist:firefox in apps/browser (Node version from .nvmrc). Output: apps/browser/build. The fork diff against upstream is in the wasc/ directory and commits on the wasc branch."
+  }
+}
