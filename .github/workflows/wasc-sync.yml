@@ -5,6 +5,9 @@
 # Pushing upstream history that touches .github/workflows needs a token with the `workflow`
 # scope: set SYNC_TOKEN (fine-grained PAT on this repo: contents, pull requests, workflows,
 # actions). Without it the default GITHUB_TOKEN is used and such pushes are rejected.
+#
+# Upstream tags are fetched into refs/upstream-tags/* so they can never clobber (or be confused
+# with) this repo's own tags. Our releases use wasc-desktop-v* / wasc-browser-v*.
 name: wasc sync
 
 on:
@@ -18,9 +21,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-  pull-requests: write
-  actions: write
+  contents: read
 
 concurrency:
   group: wasc-sync
@@ -30,6 +31,10 @@ jobs:
   sync:
     name: Merge upstream release
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
     env:
       GH_TOKEN: ${{ secrets.SYNC_TOKEN || github.token }}
     steps:
@@ -40,12 +45,11 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.SYNC_TOKEN || github.token }}
 
-      - name: Keep upstream workflows disabled
-        # Workflows that arrived with the previous sync are enabled by default.
-        run: |
-          gh workflow list -R "$GITHUB_REPOSITORY" --all --json id,path,state \
-            --jq '.[] | select(.state == "active") | select(.path | test("/wasc-[^/]*$") | not) | .id' \
-            | while read -r id; do gh workflow disable "$id" -R "$GITHUB_REPOSITORY" || true; done
+      - name: Keep upstream workflows disabled, keep scheduled wasc workflows alive
+        # Workflows that arrived with the previous sync are enabled by default. Re-enabling the
+        # scheduled workflows resets GitHub's 60-day inactivity timer (wasc-guard.yml also does
+        # this monthly, since this workflow only runs quarterly).
+        run: wasc/ci/workflow-guard.sh wasc-sync.yml wasc-guard.yml
 
       - name: Fetch upstream
         run: |
@@ -53,7 +57,9 @@ jobs:
           git config user.email "wasc-sync@users.noreply.github.com"
           git remote add upstream https://github.com/bitwarden/clients.git
           git fetch --no-tags upstream main
-          git fetch --no-tags upstream 'refs/tags/desktop-v*:refs/tags/desktop-v*' 'refs/tags/browser-v*:refs/tags/browser-v*'
+          # Own namespace: same-named tags in this repo can never be overwritten or picked by mistake.
+          git fetch --no-tags --force upstream \
+            'refs/tags/desktop-v*:refs/upstream-tags/desktop-v*' 'refs/tags/browser-v*:refs/upstream-tags/browser-v*'
 
       - name: Mirror upstream main
         run: |
@@ -66,10 +72,18 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${INPUT_TAG:-$(git tag -l 'desktop-v*' | grep -E '^desktop-v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)}"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "branch=sync/$TAG" >> "$GITHUB_OUTPUT"
-          if git merge-base --is-ancestor "$TAG" HEAD; then
+          TAG="${INPUT_TAG:-$(git for-each-ref --format='%(refname:lstrip=2)' 'refs/upstream-tags/desktop-v*' \
+            | grep -E '^desktop-v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)}"
+          REF="refs/upstream-tags/$TAG"
+          if ! git rev-parse -q --verify "$REF^{commit}" >/dev/null; then
+            echo "::error::Upstream tag $TAG not found"; exit 1
+          fi
+          {
+            echo "tag=$TAG"
+            echo "ref=$REF"
+            echo "branch=sync/$TAG"
+          } >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$REF" HEAD; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "$TAG is already merged into wasc"
           elif git ls-remote --exit-code origin "refs/heads/sync/$TAG" >/dev/null; then
@@ -79,8 +93,8 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
           BROWSER_TAG="browser-${TAG#desktop-}"
-          if git rev-parse -q --verify "refs/tags/$BROWSER_TAG" >/dev/null \
-            && [ "$(git rev-parse "$BROWSER_TAG^{commit}")" != "$(git rev-parse "$TAG^{commit}")" ]; then
+          if git rev-parse -q --verify "refs/upstream-tags/$BROWSER_TAG" >/dev/null \
+            && [ "$(git rev-parse "refs/upstream-tags/$BROWSER_TAG^{commit}")" != "$(git rev-parse "$REF^{commit}")" ]; then
             echo "note=$BROWSER_TAG points at a different commit than $TAG; the browser build uses $TAG." >> "$GITHUB_OUTPUT"
           fi
 
@@ -89,10 +103,11 @@ jobs:
         if: steps.pick.outputs.skip == 'false'
         env:
           TAG: ${{ steps.pick.outputs.tag }}
+          REF: ${{ steps.pick.outputs.ref }}
           BRANCH: ${{ steps.pick.outputs.branch }}
         run: |
           git checkout -b "$BRANCH"
-          if git merge --no-ff --no-edit -m "chore(wasc): merge upstream $TAG" "$TAG"; then
+          if git merge --no-ff --no-edit -m "chore(wasc): merge upstream $TAG" "$REF"; then
             echo "conflicts=false" >> "$GITHUB_OUTPUT"
           else
             echo "conflicts=true" >> "$GITHUB_OUTPUT"
@@ -101,7 +116,7 @@ jobs:
 
       - name: Resolve conflicts with Claude
         if: steps.merge.outputs.conflicts == 'true'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@f27be6b65a4652f08a2ba3cff79114829b588967 # v1.0.252
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.SYNC_TOKEN || github.token }}
@@ -150,11 +165,16 @@ jobs:
         run: |
           set -euo pipefail
           git push origin "$BRANCH"
+          # The push registers (and enables) any workflow files new in this upstream release;
+          # disable them before the PR can trigger them.
+          sleep 30
+          wasc/ci/workflow-guard.sh
           {
             echo "Merges upstream \`$TAG\` into \`wasc\`."
             echo
             if [ "$CONFLICTS" = "true" ]; then
               echo "The merge had conflicts, resolved by claude-code-action. **Review these files carefully:**"
+              # shellcheck disable=SC2016 # literal backticks (Markdown)
               sed 's/^/- `/; s/$/`/' "$RUNNER_TEMP/conflicts.txt"
               echo
               [ -f "$RUNNER_TEMP/resolution.md" ] && cat "$RUNNER_TEMP/resolution.md"
@@ -167,6 +187,7 @@ jobs:
           } > "$RUNNER_TEMP/body.md"
           gh pr create -R "$GITHUB_REPOSITORY" --base wasc --head "$BRANCH" \
             --title "chore(wasc): sync upstream $TAG" --body-file "$RUNNER_TEMP/body.md"
+          wasc/ci/workflow-guard.sh
           # Pushes made with GITHUB_TOKEN do not trigger workflows; kick the builds explicitly.
           gh workflow run wasc-browser.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH" -f release=false || true
           gh workflow run wasc-desktop.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH" -f release=false || true
