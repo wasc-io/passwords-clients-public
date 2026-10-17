@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- wasc passwords icon (PLACEHOLDER), rounded-square variant for the browser toolbar and the
+     macOS app icon (macOS grid: 824px body centered on a 1024px canvas). Same "w" as icon.svg.
+     Rendered by wasc/brand/render-icons.sh. Set BG to recolor (render script makes gray variants). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="#111111"/>
+  <g fill="#ffffff" transform="translate(512 512) scale(0.92) translate(-512 -512)">
+    <polygon points="212,330 324,330 446,694 334,694"/>
+    <polygon points="334,694 446,694 568,330 456,330"/>
+    <polygon points="456,330 568,330 690,694 578,694"/>
+    <polygon points="578,694 690,694 812,330 700,330"/>
+  </g>
+</svg>
