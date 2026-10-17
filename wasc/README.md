@@ -68,7 +68,7 @@ npx web-ext lint -s build
 cd ../desktop/desktop_native && node build.js cross-platform --release && cd ..
 npm run build
 APPLE_NOTARIZE=false CSC_IDENTITY_AUTO_DISCOVERY=false CSC_NAME=- \
-  npx electron-builder --config ../../wasc/desktop/electron-builder.json --mac --universal -p never -c.mac.identity=null
+  npx electron-builder --config ../../wasc/desktop/electron-builder.json --mac --universal -p never -c.mac.identity=-
 ```
 
 ## CI

@@ -146,16 +146,22 @@ jobs:
         env:
           APPLE_NOTARIZE: "false"
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        # CSC_NAME=- makes after-pack ad-hoc sign the proxy; the app itself is left to Electron's
-        # ad-hoc signature. Not notarized: users must clear the quarantine flag.
+        # Ad-hoc signature ("-") for the app (arm64 refuses to run unsigned code) and, via
+        # CSC_NAME=-, for the proxy in after-pack. Not notarized: users must clear the quarantine flag.
         run: |
           echo "::warning::MAC_CERT_P12_BASE64/MAC_CERT_PASSWORD not set: building an unsigned, un-notarized app"
           npm run clean:dist
           GITHUB_ACTIONS=false CSC_NAME=- npx electron-builder --config ../../wasc/desktop/electron-builder.json \
-            --mac --universal -p never -c.mac.identity=null
+            --mac --universal -p never -c.mac.identity=-
 
-      - name: List output
-        run: ls -la dist
+      - name: Inspect output
+        run: |
+          ls -la dist
+          APP="dist/mac-universal/wasc passwords.app"
+          plutil -p "$APP/Contents/Info.plist" | grep -E '"CFBundle(Identifier|Name|DisplayName|ShortVersionString)"'
+          lipo -archs "$APP/Contents/MacOS/wasc passwords"
+          codesign -dv --verbose=2 "$APP" 2>&1 | grep -E "^(Identifier|Authority|TeamIdentifier|Signature)" || true
+          codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
