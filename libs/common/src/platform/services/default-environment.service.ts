@@ -290,8 +290,9 @@ export class DefaultEnvironmentService implements EnvironmentService {
     }
 
     // If self-hosted ensure urls are valid else fallback to default region
+    // wasc passwords fork: with nothing configured, default to our self-hosted server.
     if (region == Region.SelfHosted && isEmpty(urls)) {
-      region = DEFAULT_REGION;
+      return new SelfHostedEnvironment({ base: "https://passwords.wasc.me" });
     }
 
     // Load urls from region config

@@ -382,9 +382,19 @@ describe("EnvironmentService", () => {
       });
     });
 
+    // wasc passwords fork: with nothing stored, the environment is our self-hosted server.
+    it("defaults to the wasc passwords server", async () => {
+      const env = await firstValueFrom(sut.environment$);
+      expect(env.getRegion()).toBe(Region.SelfHosted);
+      expect(env.getUrls().base).toBe("https://passwords.wasc.me");
+      expect(env.getWebVaultUrl()).toBe("https://passwords.wasc.me");
+      expect(env.getApiUrl()).toBe("https://passwords.wasc.me/api");
+      expect(env.getIdentityUrl()).toBe("https://passwords.wasc.me/identity");
+    });
+
     it("self-hosted and sets all urls", async () => {
       let env = await firstValueFrom(sut.environment$);
-      expect(env.getScimUrl()).toBe("https://scim.bitwarden.com/v2");
+      expect(env.getScimUrl()).toBe("https://passwords.wasc.me/scim/v2");
 
       await sut.setEnvironment(Region.SelfHosted, {
         base: "base.example.com",
