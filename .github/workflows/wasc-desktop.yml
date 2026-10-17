@@ -17,12 +17,16 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Publish GitHub release desktop-v<version> and mark it Latest (auto-update feed)"
+        description: "Publish GitHub release wasc-desktop-v<version> (Latest when signed, prerelease when unsigned)"
         type: boolean
         default: false
+      version:
+        description: "Version override X.Y.Z for fork-only fixes, e.g. 2026.10.1 (default: apps/desktop/src/package.json)"
+        required: false
+        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: wasc-desktop-${{ github.ref }}
@@ -32,6 +36,11 @@ jobs:
   macos:
     name: macOS universal
     runs-on: macos-15
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      signed: ${{ steps.version.outputs.signed }}
     env:
       NODE_OPTIONS: --max_old_space_size=4096
       HAS_MAC_CERT: ${{ secrets.MAC_CERT_P12_BASE64 != '' && secrets.MAC_CERT_PASSWORD != '' }}
@@ -74,7 +83,17 @@ jobs:
 
       - name: Read version
         id: version
-        run: echo "version=$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # The packaged app takes its version from src/package.json (build/package.json).
+          VERSION="${INPUT_VERSION:-$(node -p 'require("./src/package.json").version')}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version '$VERSION' (expected X.Y.Z)"; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "signed=$HAS_MAC_CERT" >> "$GITHUB_OUTPUT"
 
       - name: Build native modules (x64 + arm64)
         working-directory: apps/desktop/desktop_native
@@ -96,7 +115,9 @@ jobs:
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 3600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          # Prepend ours to the user search list (paths may contain spaces, hence NUL-separated).
+          security list-keychains -d user | sed -E 's/^[[:space:]]*"(.*)"$/\1/' | tr '\n' '\0' \
+            | xargs -0 security list-keychains -d user -s "$KEYCHAIN"
           security default-keychain -s "$KEYCHAIN"
           echo "$MAC_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$MAC_CERT_PASSWORD" \
@@ -134,34 +155,82 @@ jobs:
         if: env.HAS_MAC_CERT == 'true'
         env:
           APPLE_NOTARIZE: ${{ env.HAS_ASC == 'true' && 'true' || 'false' }}
+          VERSION: ${{ steps.version.outputs.version }}
         # GITHUB_ACTIONS=false keeps scripts/macos-signing-identity.js from picking Bitwarden's
         # identity; it then uses CSC_NAME.
         run: |
           npm run clean:dist
           GITHUB_ACTIONS=false npx electron-builder --config ../../wasc/desktop/electron-builder.json \
-            --mac --universal -p never
+            --mac --universal -p never -c.extraMetadata.version="$VERSION"
 
       - name: Package (unsigned)
         if: env.HAS_MAC_CERT != 'true'
         env:
           APPLE_NOTARIZE: "false"
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          VERSION: ${{ steps.version.outputs.version }}
         # Ad-hoc signature ("-") for the app (arm64 refuses to run unsigned code) and, via
         # CSC_NAME=-, for the proxy in after-pack. Not notarized: users must clear the quarantine flag.
+        # No hardened runtime: its library validation makes dyld refuse to load Electron Framework,
+        # because an ad-hoc signature has no Team ID. scripts/sign-macos.js only adds
+        # `--options runtime` when electron-builder resolves hardenedRuntime=true.
         run: |
           echo "::warning::MAC_CERT_P12_BASE64/MAC_CERT_PASSWORD not set: building an unsigned, un-notarized app"
           npm run clean:dist
           GITHUB_ACTIONS=false CSC_NAME=- npx electron-builder --config ../../wasc/desktop/electron-builder.json \
-            --mac --universal -p never -c.mac.identity=-
+            --mac --universal -p never -c.mac.identity=- -c.mac.hardenedRuntime=false \
+            -c.extraMetadata.version="$VERSION"
 
       - name: Inspect output
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           ls -la dist
           APP="dist/mac-universal/wasc passwords.app"
           plutil -p "$APP/Contents/Info.plist" | grep -E '"CFBundle(Identifier|Name|DisplayName|ShortVersionString)"'
           lipo -archs "$APP/Contents/MacOS/wasc passwords"
-          codesign -dv --verbose=2 "$APP" 2>&1 | grep -E "^(Identifier|Authority|TeamIdentifier|Signature)" || true
           codesign --verify --deep --strict --verbose=2 "$APP"
+          FRAMEWORK="$APP/Contents/Frameworks/Electron Framework.framework"
+          for f in "$APP" "$FRAMEWORK"; do
+            echo "== $f"
+            codesign -dv --verbose=2 "$f" 2>&1 | grep -E "^(Identifier|Authority|TeamIdentifier|Signature|CodeDirectory)" || true
+          done
+          BUNDLE_VERSION=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")
+          if [ "$BUNDLE_VERSION" != "$VERSION" ]; then
+            echo "::error::Bundle version $BUNDLE_VERSION != $VERSION"; exit 1
+          fi
+          grep -qx "version: $VERSION" dist/latest-mac.yml || { echo "::error::latest-mac.yml is not $VERSION"; cat dist/latest-mac.yml; exit 1; }
+          if [ "$HAS_MAC_CERT" != true ]; then
+            for f in "$APP" "$FRAMEWORK"; do
+              if codesign -dv "$f" 2>&1 | grep -E "^CodeDirectory" | grep -q "runtime"; then
+                echo "::error::$f has the hardened runtime flag in an ad-hoc build"; exit 1
+              fi
+            done
+          fi
+
+      - name: Launch check
+        # Starts the packaged app for 15 seconds. dyld rejections (for example library validation
+        # refusing Electron Framework: "different Team IDs") kill the process at startup.
+        run: |
+          set -uo pipefail
+          BIN="dist/mac-universal/wasc passwords.app/Contents/MacOS/wasc passwords"
+          LOG="$RUNNER_TEMP/launch.log"
+          "$BIN" > "$LOG" 2>&1 &
+          PID=$!
+          sleep 15
+          if kill -0 "$PID" 2>/dev/null; then ALIVE=true; else ALIVE=false; fi
+          kill "$PID" 2>/dev/null || true
+          sleep 3
+          pkill -9 -f "wasc passwords.app/Contents" || true
+          echo "--- app output"; cat "$LOG"; echo "---"
+          if grep -Eiq "dyld|team id|library not loaded|code signature" "$LOG"; then
+            echo "::error::dyld / code signature error while launching the app"; exit 1
+          fi
+          if [ "$ALIVE" != true ]; then
+            echo "::error::The app exited within 15 seconds"; exit 1
+          fi
+          echo "App stayed up for 15 seconds without dyld errors"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -174,24 +243,51 @@ jobs:
             apps/desktop/dist/*.yml
           if-no-files-found: error
 
-      - name: Publish GitHub release
-        if: github.event_name == 'workflow_dispatch' && inputs.release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: desktop-v${{ steps.version.outputs.version }}
-          SIGNED: ${{ env.HAS_MAC_CERT == 'true' && 'signed' || 'UNSIGNED' }}
-        run: |
-          set -euo pipefail
-          # electron-updater (GitHub provider) reads latest-mac.yml from the release marked Latest.
-          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
-              --title "wasc passwords desktop ${{ steps.version.outputs.version }}" \
-              --notes "macOS universal build ($SIGNED) from $GITHUB_SHA (upstream desktop-v${{ steps.version.outputs.version }})."
-          else
-            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --latest
-          fi
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber dist/*.dmg dist/*.zip dist/*.blockmap dist/*.yml
-
       - name: Clean up keychain
         if: always() && env.CSC_KEYCHAIN != ''
         run: security delete-keychain "$CSC_KEYCHAIN" || true
+
+  release:
+    name: GitHub release
+    needs: macos
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasc-passwords-desktop-${{ needs.macos.outputs.version }}-mac
+          path: dist
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.macos.outputs.version }}
+          TAG: wasc-desktop-v${{ needs.macos.outputs.version }}
+          SIGNED: ${{ needs.macos.outputs.signed }}
+        run: |
+          set -euo pipefail
+          # Own tag prefix: the fork also carries upstream's desktop-v* tags.
+          ASSETS=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets | length' 2>/dev/null || echo none)
+          if [ "$ASSETS" = none ]; then
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::Tag $TAG exists without a release; delete it or use the version input"; exit 1
+            fi
+            if [ "$SIGNED" = true ]; then KIND="signed + notarized"; else KIND="UNSIGNED (ad-hoc), prerelease"; fi
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+              --title "wasc passwords desktop $VERSION" \
+              --notes "macOS universal build ($KIND) from $GITHUB_SHA."
+          elif [ "$ASSETS" != 0 ]; then
+            echo "::error::Release $TAG already has $ASSETS assets. Ship fork-only fixes with the version input (e.g. ${VERSION%.*}.$(( ${VERSION##*.} + 1 )))."
+            exit 1
+          fi
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" dist/*.dmg dist/*.zip dist/*.blockmap dist/*.yml
+          if [ "$SIGNED" = true ]; then
+            # electron-updater (GitHub provider) reads latest-mac.yml from the release marked Latest.
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest
+          else
+            # Unsigned builds cannot auto-update and must never become the update feed.
+            gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          fi
