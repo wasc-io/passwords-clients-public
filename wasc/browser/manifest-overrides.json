@@ -1,0 +1,24 @@
+{
+  "name": "wasc passwords",
+  "short_name": "wasc passwords",
+  "action": {
+    "default_title": "wasc passwords"
+  },
+  "browser_action": {
+    "default_title": "wasc passwords"
+  },
+  "sidebar_action": {
+    "default_title": "wasc passwords"
+  },
+  "__chrome__key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuCKGHrZhY83OLPZfpoTXidIVsYSw4uXQmvKneRoxNbrbZrVWCaRpq9OaCCafgijuz9Q7Rpmt1x0fTqMLcdvfjq3SqOs9tAY4BFW+3Uqd60ul7vjbczc3aypJiGsPA+6eHQ50je3K+/CALseLU6V/j/LwDeOXGcvbs+hqQ+qr9vm5SsUVUDicr5R3k3r0RAH9niQKiHII+UvmqrcXD2IYVt26zJ+FGcSVZK/IINTiTwTmyGT7PvvB9Q6pd28mfgcOD4J5AlKWPHmsy/aquMGC3hon47au+AOTAkK1e92sUD1v93cHjaAQd5mDLqoaKbYI/NdsRu2Da8zDSlUv8YAhUQIDAQAB",
+  "__edge__key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuCKGHrZhY83OLPZfpoTXidIVsYSw4uXQmvKneRoxNbrbZrVWCaRpq9OaCCafgijuz9Q7Rpmt1x0fTqMLcdvfjq3SqOs9tAY4BFW+3Uqd60ul7vjbczc3aypJiGsPA+6eHQ50je3K+/CALseLU6V/j/LwDeOXGcvbs+hqQ+qr9vm5SsUVUDicr5R3k3r0RAH9niQKiHII+UvmqrcXD2IYVt26zJ+FGcSVZK/IINTiTwTmyGT7PvvB9Q6pd28mfgcOD4J5AlKWPHmsy/aquMGC3hon47au+AOTAkK1e92sUD1v93cHjaAQd5mDLqoaKbYI/NdsRu2Da8zDSlUv8YAhUQIDAQAB",
+  "__opera__key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuCKGHrZhY83OLPZfpoTXidIVsYSw4uXQmvKneRoxNbrbZrVWCaRpq9OaCCafgijuz9Q7Rpmt1x0fTqMLcdvfjq3SqOs9tAY4BFW+3Uqd60ul7vjbczc3aypJiGsPA+6eHQ50je3K+/CALseLU6V/j/LwDeOXGcvbs+hqQ+qr9vm5SsUVUDicr5R3k3r0RAH9niQKiHII+UvmqrcXD2IYVt26zJ+FGcSVZK/IINTiTwTmyGT7PvvB9Q6pd28mfgcOD4J5AlKWPHmsy/aquMGC3hon47au+AOTAkK1e92sUD1v93cHjaAQd5mDLqoaKbYI/NdsRu2Da8zDSlUv8YAhUQIDAQAB",
+  "__firefox__browser_specific_settings": {
+    "gecko": {
+      "id": "passwords@wasc.me",
+      "data_collection_permissions": {
+        "required": ["authenticationInfo", "personallyIdentifyingInfo", "financialAndPaymentInfo"]
+      }
+    }
+  }
+}

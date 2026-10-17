@@ -26,6 +26,7 @@ function transform(browser) {
 
     manifest = transformPrefixes(manifest, browser);
     manifest = transformChannel(manifest);
+    manifest = transformWasc(manifest, browser);
 
     return JSON.stringify(manifest, null, 2);
   };
@@ -55,6 +56,30 @@ function applyOverrides(target, overrides) {
     }
   }
   return target;
+}
+
+// wasc passwords fork: rebrand + fixed IDs from wasc/browser/manifest-overrides.json (see
+// wasc/README.md). Like applyOverrides, top-level sections only apply when the manifest has them
+// (MV2 browser_action vs MV3 action), but keys nested inside an existing section are created.
+function transformWasc(manifest, browser) {
+  const overrides = transformPrefixes(
+    require("../../../wasc/browser/manifest-overrides.json"),
+    browser,
+  );
+  const merge = (target, source) => {
+    for (const [key, value] of Object.entries(source)) {
+      target[key] = isPlainObject(value) ? merge(target[key] ?? {}, value) : value;
+    }
+    return target;
+  };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (!isPlainObject(value)) {
+      manifest[key] = value;
+    } else if (manifest[key]) {
+      merge(manifest[key], value);
+    }
+  }
+  return manifest;
 }
 
 function isPlainObject(value) {

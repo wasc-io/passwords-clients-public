@@ -104,7 +104,7 @@ export class DesktopIpcTransport {
 
     let activePort: NativePort | undefined;
     try {
-      const port = BrowserApi.connectNative("com.8bit.bitwarden");
+      const port = BrowserApi.connectNative("me.wasc.passwords");
       activePort = port;
 
       let resolveReady: () => void;

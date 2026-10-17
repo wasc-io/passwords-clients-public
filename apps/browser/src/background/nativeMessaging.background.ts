@@ -109,7 +109,7 @@ export class NativeMessagingBackground {
     this.appId = appId;
 
     return new Promise<void>((resolve, reject) => {
-      this.port = BrowserApi.connectNative("com.8bit.bitwarden");
+      this.port = BrowserApi.connectNative("me.wasc.passwords");
 
       this.connecting = true;
 

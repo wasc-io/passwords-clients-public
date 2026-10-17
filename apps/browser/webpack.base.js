@@ -228,6 +228,8 @@ module.exports.buildConfig = function buildConfig(params) {
               },
             ]
           : []),
+        // wasc passwords fork: brand icons overwrite the default action/toolbar icons.
+        { from: path.resolve(__dirname, "../../wasc/brand/browser"), to: "images", force: true },
         { from: path.resolve(__dirname, "src/popup/images"), to: "popup/images" },
         { from: path.resolve(__dirname, "src/autofill/content/autofill.css"), to: "content" },
       ],
