@@ -16,9 +16,13 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Attach zips to the GitHub release browser-v<version> (never marked Latest)"
+        description: "Attach zips to the GitHub release wasc-browser-v<version> (never marked Latest)"
         type: boolean
         default: true
+      version:
+        description: "Version override X.Y.Z for fork-only fixes, e.g. 2026.10.1 (default: apps/browser/package.json)"
+        required: false
+        type: string
       publish_stores:
         description: "Publish to Chrome Web Store / AMO (only where secrets are configured)"
         type: boolean
@@ -30,7 +34,7 @@ on:
         default: listed
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: wasc-browser-${{ github.ref }}
@@ -40,10 +44,12 @@ jobs:
   build:
     name: Build extensions
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
       NODE_OPTIONS: --max_old_space_size=4096
-      HAS_CWS: ${{ secrets.CWS_CLIENT_ID != '' && secrets.CWS_CLIENT_SECRET != '' && secrets.CWS_REFRESH_TOKEN != '' && secrets.CWS_EXTENSION_ID != '' && secrets.CWS_PUBLISHER_ID != '' }}
-      HAS_AMO: ${{ secrets.AMO_JWT_ISSUER != '' && secrets.AMO_JWT_SECRET != '' }}
     steps:
       - name: Check out repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,27 +70,53 @@ jobs:
 
       - name: Read version
         id: version
-        run: echo "version=$(node -p 'require("./apps/browser/package.json").version')" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_VERSION:-$(node -p 'require("./apps/browser/package.json").version')}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid version '$VERSION' (expected X.Y.Z)"; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [ -n "$INPUT_VERSION" ]; then
+            # Not committed: stamp the override into the manifest templates for this build only.
+            for f in apps/browser/src/manifest.json apps/browser/src/manifest.v3.json; do
+              node -e 'const fs=require("fs"),[f,v]=process.argv.slice(1),m=JSON.parse(fs.readFileSync(f));m.version=v;fs.writeFileSync(f,JSON.stringify(m,null,2)+"\n")' "$f" "$VERSION"
+            done
+          fi
 
       - name: Build Chrome
         working-directory: apps/browser
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           npm run dist:chrome
-          mv dist/dist-chrome.zip "dist/wasc-passwords-chrome-${{ steps.version.outputs.version }}.zip"
+          test "$(node -p 'require("./build/manifest.json").version')" = "$VERSION"
+          mv dist/dist-chrome.zip "dist/wasc-passwords-chrome-$VERSION.zip"
           # The Chrome Web Store rejects manifests with a "key"; it keeps the item ID instead
           # (first upload: add the private key as key.pem to this zip, see wasc/README.md).
           node -e 'const f="build/manifest.json",m=require("./"+f);delete m.key;require("fs").writeFileSync(f,JSON.stringify(m,null,2))'
-          (cd build && zip -qr "../dist/wasc-passwords-chrome-${{ steps.version.outputs.version }}-webstore.zip" .)
+          (cd build && zip -qr "../dist/wasc-passwords-chrome-$VERSION-webstore.zip" .)
 
       - name: Build Firefox
         working-directory: apps/browser
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           npm run dist:firefox
-          mv dist/dist-firefox.zip "dist/wasc-passwords-firefox-${{ steps.version.outputs.version }}.zip"
+          test "$(node -p 'require("./build/manifest.json").version')" = "$VERSION"
+          mv dist/dist-firefox.zip "dist/wasc-passwords-firefox-$VERSION.zip"
           npx --yes web-ext@8 lint -s build
 
       - name: Build source archive (AMO reviewers)
-        run: git archive --format=zip -o "apps/browser/dist/wasc-passwords-browser-source-${{ steps.version.outputs.version }}.zip" HEAD
+        # Includes an uncommitted version override (git stash create only writes a commit object).
+        run: |
+          set -euo pipefail
+          REV=$(git stash create)
+          git archive --format=zip -o "apps/browser/dist/wasc-passwords-browser-source-${{ steps.version.outputs.version }}.zip" "${REV:-HEAD}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -93,72 +125,123 @@ jobs:
           path: apps/browser/dist/*.zip
           if-no-files-found: error
 
-      - name: Attach to GitHub release
-        if: github.event_name == 'workflow_dispatch' && inputs.release
+  release:
+    name: GitHub release
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasc-passwords-browser-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: browser-v${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAG: wasc-browser-v${{ needs.build.outputs.version }}
         run: |
-          # --latest=false: the desktop auto-updater follows the release marked Latest.
-          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest=false \
-              --title "wasc passwords browser ${{ steps.version.outputs.version }}" \
-              --notes "Browser extension built from $GITHUB_SHA (upstream browser-v${{ steps.version.outputs.version }})."
+          set -euo pipefail
+          # Own tag prefix: the fork also carries upstream's browser-v* tags.
+          ASSETS=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets | length' 2>/dev/null || echo none)
+          if [ "$ASSETS" = none ]; then
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::Tag $TAG exists without a release; delete it or use the version input"; exit 1
+            fi
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
+              --title "wasc passwords browser $VERSION" \
+              --notes "Browser extension built from $GITHUB_SHA."
+          elif [ "$ASSETS" != 0 ]; then
+            echo "::error::Release $TAG already has $ASSETS assets. Ship fork-only fixes with the version input (e.g. ${VERSION%.*}.$(( ${VERSION##*.} + 1 )))."
+            exit 1
           fi
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber apps/browser/dist/*.zip
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" dist/*.zip
+          # --latest=false: the desktop auto-updater follows the release marked Latest.
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest=false
+
+  stores:
+    name: Publish to stores
+    needs: [build, release]
+    # Runs after the release job, or without it when release=false.
+    if: >-
+      always() && github.event_name == 'workflow_dispatch' && inputs.publish_stores
+      && needs.build.result == 'success' && needs.release.result != 'failure' && needs.release.result != 'cancelled'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # only to attach the signed unlisted .xpi to the release
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+      HAS_CWS: ${{ secrets.CWS_CLIENT_ID != '' && secrets.CWS_CLIENT_SECRET != '' && secrets.CWS_REFRESH_TOKEN != '' && secrets.CWS_EXTENSION_ID != '' && secrets.CWS_PUBLISHER_ID != '' }}
+      HAS_AMO: ${{ secrets.AMO_JWT_ISSUER != '' && secrets.AMO_JWT_SECRET != '' }}
+    steps:
+      - name: Check out AMO metadata
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+          sparse-checkout: wasc/browser
+
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: wasc-passwords-browser-${{ needs.build.outputs.version }}
+          path: dist
 
       - name: Publish to Chrome Web Store (API v2)
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_stores && env.HAS_CWS == 'true'
+        if: env.HAS_CWS == 'true'
         env:
           CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
           CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
           CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
           CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
           CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
-          ZIP: apps/browser/dist/wasc-passwords-chrome-${{ steps.version.outputs.version }}-webstore.zip
+          ZIP: dist/wasc-passwords-chrome-${{ needs.build.outputs.version }}-webstore.zip
         run: |
           set -euo pipefail
-          TOKEN=$(curl -sf https://oauth2.googleapis.com/token \
+          TOKEN=$(curl -sS --fail-with-body https://oauth2.googleapis.com/token \
             -d client_id="$CWS_CLIENT_ID" -d client_secret="$CWS_CLIENT_SECRET" \
             -d refresh_token="$CWS_REFRESH_TOKEN" -d grant_type=refresh_token | jq -r .access_token)
           echo "::add-mask::$TOKEN"
           ITEM="publishers/$CWS_PUBLISHER_ID/items/$CWS_EXTENSION_ID"
-          curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/zip" \
+          curl -sS --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/zip" \
             --data-binary "@$ZIP" "https://chromewebstore.googleapis.com/upload/v2/$ITEM:upload" | tee upload.json
           STATE=$(jq -r '.uploadState // empty' upload.json)
           for _ in $(seq 1 30); do
             [ "$STATE" = "IN_PROGRESS" ] || break
             sleep 10
-            STATE=$(curl -sf -H "Authorization: Bearer $TOKEN" \
+            STATE=$(curl -sS --fail-with-body -H "Authorization: Bearer $TOKEN" \
               "https://chromewebstore.googleapis.com/v2/$ITEM:fetchStatus" | tee status.json \
               | jq -r '.lastAsyncUploadState // .uploadState // empty')
           done
           if [ "$STATE" != "SUCCEEDED" ]; then echo "Upload state: $STATE"; exit 1; fi
-          curl -sf -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+          curl -sS --fail-with-body -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
             -d '{"publishType":"DEFAULT_PUBLISH"}' "https://chromewebstore.googleapis.com/v2/$ITEM:publish"
 
       - name: Publish to addons.mozilla.org
-        if: github.event_name == 'workflow_dispatch' && inputs.publish_stores && env.HAS_AMO == 'true'
-        working-directory: apps/browser
+        if: env.HAS_AMO == 'true'
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
           CHANNEL: ${{ inputs.amo_channel }}
-          SOURCE: dist/wasc-passwords-browser-source-${{ steps.version.outputs.version }}.zip
         run: |
           set -euo pipefail
-          # build/ still holds the Firefox build from the step above.
+          SOURCE="dist/wasc-passwords-browser-source-$VERSION.zip"
+          unzip -q "dist/wasc-passwords-firefox-$VERSION.zip" -d firefox
           if [ "$CHANNEL" = listed ]; then
             # Listed versions are signed after review, so do not wait for approval.
-            npx --yes web-ext@8 sign -s build --channel listed --upload-source-code "$SOURCE" \
-              --amo-metadata ../../wasc/browser/amo-metadata.json --approval-timeout 0
+            npx --yes web-ext@8 sign -s firefox --channel listed --upload-source-code "$SOURCE" \
+              --amo-metadata repo/wasc/browser/amo-metadata.json --approval-timeout 0
           else
-            npx --yes web-ext@8 sign -s build --channel unlisted --upload-source-code "$SOURCE" \
-              --artifacts-dir dist/signed
+            npx --yes web-ext@8 sign -s firefox --channel unlisted --upload-source-code "$SOURCE" \
+              --artifacts-dir signed
           fi
 
       - name: Attach signed .xpi to GitHub release
-        if: github.event_name == 'workflow_dispatch' && inputs.release && inputs.publish_stores && env.HAS_AMO == 'true' && inputs.amo_channel == 'unlisted'
+        if: env.HAS_AMO == 'true' && inputs.release && inputs.amo_channel == 'unlisted'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "browser-v${{ steps.version.outputs.version }}" -R "$GITHUB_REPOSITORY" --clobber apps/browser/dist/signed/*.xpi
+        run: gh release upload "wasc-browser-v$VERSION" -R "$GITHUB_REPOSITORY" --clobber signed/*.xpi
