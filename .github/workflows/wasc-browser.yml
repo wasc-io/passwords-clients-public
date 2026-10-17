@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Attach zips to the GitHub release wasc-browser-v<version> (never marked Latest)"
+        description: "Publish the zips as GitHub prerelease wasc-browser-v<version> (never Latest)"
         type: boolean
         default: true
       version:
@@ -160,8 +160,10 @@ jobs:
             exit 1
           fi
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" dist/*.zip
-          # --latest=false: the desktop auto-updater follows the release marked Latest.
-          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --latest=false
+          # Prerelease: the desktop auto-updater follows /releases/latest, and GitHub falls back to
+          # the newest full release when none is explicitly Latest, even with --latest=false.
+          # Prereleases can never become Latest.
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
 
   stores:
     name: Publish to stores
