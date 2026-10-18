@@ -5,7 +5,7 @@ the wasc self-hosted Vaultwarden at **https://passwords.wasc.me** (friends and f
 
 upstream_tag: desktop-v2026.10.0
 
-- `main` mirrors upstream `main` (updated by `wasc-sync.yml`).
+- `main` mirrors upstream `main` (updated by the monthly upstream sync, see [Upstream sync](#upstream-sync)).
 - `wasc` (default branch) = an upstream release tag plus the small patch described below.
 - All upstream workflows are disabled in this fork; only `wasc-*.yml` run (enforced by
   `wasc-guard.yml`, see [CI](#ci)).
@@ -85,20 +85,36 @@ APPLE_NOTARIZE=false CSC_IDENTITY_AUTO_DISCOVERY=false CSC_NAME=- \
   npx electron-builder --config ../../wasc/desktop/electron-builder.json --mac --universal -p never -c.mac.identity=-
 ```
 
+## Upstream sync
+
+Upstream sync is **not** done by CI. A monthly T3 Code scheduled task in Nicolai's compose-services
+thread (`wasc-passwords-monthly-sync-v1`, every 30 days; see `list_scheduled_tasks`) does it:
+
+1. Mirror upstream `main` into our `main`, and fetch upstream tags into `refs/upstream-tags/*`
+   (see [Releases, tags and versioning](#releases-tags-and-versioning)).
+2. Merge the newest stable upstream `desktop-v*` tag into a `sync/<tag>` branch, resolve conflicts
+   (keep upstream's code plus the patch below) and bump `upstream_tag:` above.
+3. Push the branch, run the workflow guard right away, and open a PR into `wasc`.
+4. Run `wasc-browser.yml` and `wasc-desktop.yml` (release=false) on the branch and fix build breaks.
+5. If CI is green and the review is clean, merge (merge commit, never squash) and dispatch both with
+   release=true. Otherwise leave the PR open for Nicolai.
+
+It pushes with Nicolai's `gh` auth, which needs the `workflow` scope because upstream history
+changes `.github/workflows/*`. No `ANTHROPIC_API_KEY` or `SYNC_TOKEN` is needed.
+
 ## CI
 
 | Workflow           | Trigger                                | Does                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------ | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `wasc-browser.yml` | push to `wasc` (browser paths), manual | Builds Chrome + Firefox zips and a source zip. Manual run with `release` publishes `wasc-browser-v<version>` as a GitHub **prerelease** (GitHub treats the newest full release as Latest whenever none is explicitly marked, even with `--latest=false`, which would hijack the desktop update feed; prereleases never become Latest). With `publish_stores`: Chrome Web Store (API v2) if `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET`, `CWS_REFRESH_TOKEN`, `CWS_EXTENSION_ID`, `CWS_PUBLISHER_ID` are set; AMO (`web-ext sign`, listed or unlisted) if `AMO_JWT_ISSUER`, `AMO_JWT_SECRET` are set. |
 | `wasc-desktop.yml` | push to `wasc` (desktop paths), manual | Universal macOS DMG + zip + `latest-mac.yml`, then **launches the packaged app for 15 s** and fails on dyld/code-signature errors. Signs with `MAC_CERT_P12_BASE64` / `MAC_CERT_PASSWORD` (Developer ID Application), notarizes with `ASC_KEY_ID` / `ASC_ISSUER_ID` / `ASC_KEY_P8`. Without the cert it produces an ad-hoc signed build without hardened runtime. Manual run with `release` publishes `wasc-desktop-v<version>`: signed builds are marked **Latest** (the auto-update feed), unsigned builds are published as **prerelease** and never become Latest.                         |
-| `wasc-sync.yml`    | quarterly (1 Jan/Apr/Jul/Oct), manual  | Runs the workflow guard, mirrors upstream `main`, merges the newest stable upstream `desktop-v*` tag into `sync/<tag>`, lets `claude-code-action` (`ANTHROPIC_API_KEY`) resolve conflicts, pushes the branch, runs the guard again (the push registers new upstream workflows), opens a PR into `wasc` and dispatches both build workflows on it. Needs `SYNC_TOKEN` (PAT with contents, pull requests, workflows, actions) to push upstream workflow-file changes.                                                                                                                           |
-| `wasc-guard.yml`   | push to `wasc`, monthly (3rd), manual  | Runs `wasc/ci/workflow-guard.sh`: disables every active workflow not named `wasc-*`, and re-enables `wasc-sync.yml` and `wasc-guard.yml` (keepalive, see below).                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `wasc-guard.yml`   | push to `wasc`, monthly (3rd), manual  | Runs `wasc/ci/workflow-guard.sh`: disables every active workflow not named `wasc-*`, and re-enables `wasc-guard.yml` itself (keepalive, see below).                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
 ### Releases, tags and versioning
 
 - Our release tags are `wasc-desktop-v<version>` and `wasc-browser-v<version>`. The fork also
   carries upstream's `desktop-v*` / `browser-v*` (and old bare `v*`) tags, so we never reuse those
-  names. `wasc-sync.yml` fetches upstream tags into `refs/upstream-tags/*`, never into
+  names. The upstream sync fetches upstream tags into `refs/upstream-tags/*`, never into
   `refs/tags/*`, so an upstream tag can never overwrite one of ours (or vice versa).
 - electron-updater's GitHub provider (6.8, `allowPrerelease` off) asks
   `github.com/<repo>/releases/latest` for the Latest release's tag, then downloads
@@ -122,15 +138,15 @@ APPLE_NOTARIZE=false CSC_IDENTITY_AUTO_DISCOVERY=false CSC_NAME=- \
 
 - The repo's default `GITHUB_TOKEN` permission is **read** (`Settings > Actions > General`), and
   every `wasc-*` job declares its own `permissions:`. Build jobs get `contents: read`; only the
-  release/store/sync jobs get write scopes.
+  release/store jobs and the guard (`actions: write`) get write scopes.
 - `wasc/ci/workflow-guard.sh` disables every active workflow outside `wasc-*.yml`. Upstream
   workflows are registered (enabled) when a branch containing them is pushed, so the guard runs on
-  every push to `wasc`, monthly, and twice inside `wasc-sync.yml` around the sync push/PR.
+  every push to `wasc`, monthly, and the upstream sync runs it right after pushing a sync branch.
 - **Keepalive:** GitHub disables scheduled workflows in public repos after 60 days without
-  repository activity. The quarterly sync alone would hit that, so `wasc-guard.yml` runs monthly
-  and calls `PUT /actions/workflows/<file>/enable` for `wasc-sync.yml` and itself, which resets
-  the timer (same approach as the API mode of `gautamkrishnar/keepalive-workflow`, without a
-  third-party action). If both ever get disabled anyway, re-enable them in the Actions tab.
+  repository activity. `wasc-guard.yml` is the only scheduled wasc workflow; it runs monthly and
+  calls `PUT /actions/workflows/wasc-guard.yml/enable` on itself, which resets the timer (same
+  approach as the API mode of `gautamkrishnar/keepalive-workflow`, without a third-party action).
+  If it ever gets disabled anyway, re-enable it in the Actions tab.
 
 Signing details: `scripts/macos-signing-identity.js` hardcodes Bitwarden's identity when
 `GITHUB_ACTIONS=true`, so electron-builder runs with `GITHUB_ACTIONS=false` and `CSC_NAME=<SHA-1 of

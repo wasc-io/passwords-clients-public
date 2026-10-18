@@ -1,9 +1,9 @@
-# wasc passwords: keep Actions in this fork limited to wasc-* workflows, and keep the scheduled
-# wasc workflows alive. See wasc/ci/workflow-guard.sh and wasc/README.md.
+# wasc passwords: keep Actions in this fork limited to wasc-* workflows, and keep this workflow's
+# schedule alive. See wasc/ci/workflow-guard.sh and wasc/README.md.
 #
 # GitHub disables scheduled workflows in public repos after 60 days without repository activity.
-# The monthly run re-enables wasc-sync.yml (quarterly) and this workflow via the API, which resets
-# that timer.
+# The monthly run re-enables this workflow (the only scheduled wasc workflow) via the API, which
+# resets that timer.
 name: wasc guard
 
 on:
@@ -37,4 +37,4 @@ jobs:
       - name: Run guard
         env:
           GH_TOKEN: ${{ github.token }}
-        run: wasc/ci/workflow-guard.sh wasc-sync.yml wasc-guard.yml
+        run: wasc/ci/workflow-guard.sh wasc-guard.yml
