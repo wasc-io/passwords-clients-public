@@ -88,12 +88,19 @@ APPLE_NOTARIZE=false CSC_IDENTITY_AUTO_DISCOVERY=false CSC_NAME=- \
 ## Upstream sync
 
 Upstream sync is **not** done by CI. A monthly T3 Code scheduled task in Nicolai's compose-services
-thread (`wasc-passwords-monthly-sync-v1`, every 30 days) mirrors upstream `main` into our `main`,
-merges the newest stable upstream `desktop-v*` tag into a `sync/<tag>` branch, resolves conflicts
-(keeping the patch below), bumps `upstream_tag:` above, opens a PR into `wasc` (merge commit, never
-squash), runs the workflow guard right after the push, runs `wasc-browser.yml` and
-`wasc-desktop.yml` (release=false) on the branch and fixes build breaks, and dispatches both with
-release=true after merging. No `ANTHROPIC_API_KEY` or `SYNC_TOKEN` is needed.
+thread (`wasc-passwords-monthly-sync-v1`, every 30 days; see `list_scheduled_tasks`) does it:
+
+1. Mirror upstream `main` into our `main`, and fetch upstream tags into `refs/upstream-tags/*`
+   (see [Releases, tags and versioning](#releases-tags-and-versioning)).
+2. Merge the newest stable upstream `desktop-v*` tag into a `sync/<tag>` branch, resolve conflicts
+   (keep upstream's code plus the patch below) and bump `upstream_tag:` above.
+3. Push the branch, run the workflow guard right away, and open a PR into `wasc`.
+4. Run `wasc-browser.yml` and `wasc-desktop.yml` (release=false) on the branch and fix build breaks.
+5. If CI is green and the review is clean, merge (merge commit, never squash) and dispatch both with
+   release=true. Otherwise leave the PR open for Nicolai.
+
+It pushes with Nicolai's `gh` auth, which needs the `workflow` scope because upstream history
+changes `.github/workflows/*`. No `ANTHROPIC_API_KEY` or `SYNC_TOKEN` is needed.
 
 ## CI
 
